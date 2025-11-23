@@ -9,7 +9,7 @@
 const int chipSelect = 10;
 
 // GY-521 센서의 I2C 주소 (AD0 핀이 GND에 연결되었을 때 기본 주소)
-const int MPU_ADDRESS = 0x69;
+const int MPU_ADDRESS = 0x68;
 
 // 센서 값 저장을 위한 변수 (Raw Data)
 int accX, accY, accZ; // 가속도 (Accelerometer)
