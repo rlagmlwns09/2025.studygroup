@@ -1,0 +1,162 @@
+#include <Wire.h>
+#include <SD.h>
+
+// SD 카드 모듈의 CS(Chip Select) 핀 번호
+const int chipSelect = 10; 
+
+// MPU6050 I2C 주소
+const int MPU_ADDRESS = 0x68;
+
+// 센서 데이터 저장 변수
+int accX, accY, accZ, gyroX, gyroY, gyroZ;
+String dataString; // SD카드에 기록할 한 줄의 문자열 데이터
+
+// ----------------------------------------------------
+// MPU6050 초기화 함수
+void MPU6050_Init() {
+  Wire.beginTransmission(MPU_ADDRESS);
+  Wire.write(0x6B); // Power Management 1 레지스터
+  Wire.write(0x00); // 슬립 모드 해제
+  Wire.endTransmission(true);
+  Wire.beginTransmission(MPU_ADDRESS);
+  Wire.write(0x1B); // Gyroscope Configuration 레지스터
+  Wire.write(0x00); // 자이로 범위 설정 (FS_SEL=0, ±250 deg/s)
+  Wire.endTransmission(true);
+  Wire.beginTransmission(MPU_ADDRESS);
+  Wire.write(0x1C); // Accelerometer Configuration 레지스터
+  Wire.write(0x00); // 가속도 범위 설정 (AFS_SEL=0, ±2g)
+  Wire.endTransmission(true);
+  Serial.println("MPU6050 Init OK");
+}
+
+// ----------------------------------------------------
+// MPU6050 연결 및 데이터 확인 테스트 함수
+void diagnosticTest() {
+  Serial.println("MPU6050 Test...");
+
+  Wire.beginTransmission(MPU_ADDRESS);
+  int error = Wire.endTransmission();
+  if (error == 0) {
+    Serial.println("I2C OK");
+
+    Wire.beginTransmission(MPU_ADDRESS);
+    Wire.write(0x75); // WHO_AM_I 레지스터 주소
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU_ADDRESS, 1, true);
+
+    if (Wire.available()) {
+      byte who = Wire.read();
+      Serial.print("WHO_AM_I=0x"); Serial.println(who, HEX); // 0x68이 나와야 정상
+    }
+
+    readAllData(); // 현재 데이터 한번 읽어보기
+    Serial.print("ACC "); Serial.print(accX); Serial.print(",");
+    Serial.print(accY); Serial.print(","); Serial.println(accZ);
+    Serial.print("GYR "); Serial.print(gyroX); Serial.print(",");
+    Serial.print(gyroY); Serial.print(","); Serial.println(gyroZ);
+
+  } else {
+    Serial.print("I2C ERROR: "); Serial.println(error); // 0이면 성공, 다른 값은 에러
+  }
+}
+
+// ----------------------------------------------------
+// MPU6050의 모든 축 데이터 읽기 함수
+void readAllData() {
+  Wire.beginTransmission(MPU_ADDRESS);
+  Wire.write(0x3B); // ACCEL_XOUT_H 레지스터부터 읽기 시작
+  int err = Wire.endTransmission(false);
+
+  if (err != 0) {
+    // I2C 통신 오류 시 에러 문자열 생성
+    dataString = String(millis()) + ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR";
+    accX = accY = accZ = gyroX = gyroY = gyroZ = 0;
+    return;
+  }
+
+  Wire.requestFrom(MPU_ADDRESS, 14, true); // 14바이트 요청 (가속도x,y,z, 온도, 자이로x,y,z)
+  delay(2);
+
+  if (Wire.available() >= 14) {
+    // 상위 바이트(High)와 하위 바이트(Low)를 합쳐서 정수형 변수에 저장
+    accX = Wire.read() << 8 | Wire.read();
+    accY = Wire.read() << 8 | Wire.read();
+    accZ = Wire.read() << 8 | Wire.read();
+    Wire.read(); Wire.read(); // 온도 데이터 스킵
+    gyroX = Wire.read() << 8 | Wire.read();
+    gyroY = Wire.read() << 8 | Wire.read();
+    gyroZ = Wire.read() << 8 | Wire.read();
+
+    // SD카드 기록용 문자열 생성
+    dataString = String(millis()) + "," +
+                 accX + "," + accY + "," + accZ + "," +
+                 gyroX + "," + gyroY + "," + gyroZ;
+  } else {
+    dataString = String(millis()) + ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR";
+  }
+}
+
+// ----------------------------------------------------
+// SD 카드에 데이터 기록 함수 (핵심 수정 부분)
+void logToSDCard() {
+  // O_WRITE | O_CREAT | O_APPEND 플래그를 사용하여 파일 끝에 데이터를 추가함
+  File dataFile = SD.open("GY521_LOG.TXT", O_WRITE | O_CREAT | O_APPEND);
+  
+  if (dataFile) {
+    dataFile.println(dataString);
+    dataFile.close(); // 파일을 닫아야 실제로 디스크에 기록이 완료됨
+  } else {
+    // SD 카드 오픈 실패 시 에러 메시지 출력
+    Serial.println("SD card open error in logToSDCard! Check wiring or card format.");
+  }
+}
+
+// ----------------------------------------------------
+// 초기 설정
+void setup() {
+  Serial.begin(9600);
+  Wire.begin(); // I2C 통신 시작
+
+  // MPU 초기화 및 테스트
+  diagnosticTest();
+  MPU6050_Init();
+
+  pinMode(chipSelect, OUTPUT); // CS 핀을 출력으로 설정
+  Serial.println("SD Init...");
+
+  // SD 카드 초기화 확인
+  if (!SD.begin(chipSelect)) {
+    Serial.println("SD FAIL! Check wiring/card.");
+    while (1); // 실패 시 무한 루프 (프로그램 정지)
+  }
+  Serial.println("SD OK");
+
+  // 파일이 없으면 새로 만들고 헤더(제목 줄) 기록
+  if (!SD.exists("GY521_LOG.TXT")) {
+    File dataFile = SD.open("GY521_LOG.TXT", O_WRITE | O_CREAT);
+    if (dataFile) {
+      dataFile.println("Time,AccX,AccY,AccZ,GyroX,GyroY,GyroZ");
+      dataFile.close();
+      Serial.println("Header written.");
+    } else {
+      Serial.println("Error writing header file!");
+    }
+  }
+
+  Serial.println("LOG START");
+}
+
+// ----------------------------------------------------
+// 메인 루프
+void loop() {
+  readAllData(); // MPU 데이터 읽기
+
+  // 시리얼 모니터로 데이터 확인
+  Serial.print("Log Data: ");
+  Serial.println(dataString);
+
+  logToSDCard(); // SD 카드에 기록
+
+  // 너무 빠른 기록을 방지하고 안정성 확보
+  delay(100); 
+}
